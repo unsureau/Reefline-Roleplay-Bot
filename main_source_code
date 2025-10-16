@@ -1,0 +1,109 @@
+import discord
+from discord.ext import commands
+from datetime import datetime, timedelta
+import asyncio
+import os
+from dotenv import load_dotenv
+
+# Load token from .env file
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+# Setup bot intents
+intents = discord.Intents.default()
+intents.members = True
+intents.guilds = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="/", intents=intents)
+
+# Track join timestamps for anti-raid detection
+join_times = []
+
+@bot.event
+async def on_ready():
+    print(f"✅ Reefline is online as {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"🔗 Synced {len(synced)} slash commands.")
+    except Exception as e:
+        print(f"⚠️ Failed to sync commands: {e}")
+
+# ==========================
+#  MODERATION COMMANDS
+# ==========================
+
+@bot.tree.command(name="kick", description="Kick a user from the server")
+@commands.has_permissions(kick_members=True)
+async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await member.kick(reason=reason)
+    await interaction.response.send_message(f"👢 {member} has been kicked. Reason: {reason}", ephemeral=True)
+
+@bot.tree.command(name="ban", description="Ban a user from the server")
+@commands.has_permissions(ban_members=True)
+async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await member.ban(reason=reason)
+    await interaction.response.send_message(f"🔨 {member} has been banned. Reason: {reason}", ephemeral=True)
+
+@bot.tree.command(name="addrole", description="Add a role to a user")
+@commands.has_permissions(manage_roles=True)
+async def addrole(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    await member.add_roles(role)
+    await interaction.response.send_message(f"✅ Added {role.name} to {member.display_name}", ephemeral=True)
+
+@bot.tree.command(name="removerole", description="Remove a role from a user")
+@commands.has_permissions(manage_roles=True)
+async def removerole(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    await member.remove_roles(role)
+    await interaction.response.send_message(f"❌ Removed {role.name} from {member.display_name}", ephemeral=True)
+
+# ==========================
+#  ANTI RAID SYSTEM
+# ==========================
+
+@bot.event
+async def on_member_join(member):
+    global join_times
+    now = datetime.utcnow()
+    join_times.append(now)
+
+    # Keep only joins within last 60 seconds
+    join_times = [t for t in join_times if now - t < timedelta(seconds=60)]
+
+    if len(join_times) >= 75:
+        await trigger_lockdown(member.guild)
+
+async def trigger_lockdown(guild):
+    print(f"🚨 Anti-Raid triggered in {guild.name}: 75+ joins detected in 60 seconds!")
+
+    # Lock all text channels
+    for channel in guild.text_channels:
+        overwrite = channel.overwrites_for(guild.default_role)
+        overwrite.send_messages = False
+        try:
+            await channel.set_permissions(guild.default_role, overwrite=overwrite)
+        except Exception as e:
+            print(f"⚠️ Could not lock {channel.name}: {e}")
+
+    # Remove permissions for last 75 members who joined
+    recent_members = sorted(
+        guild.members, key=lambda m: m.joined_at or datetime.utcnow(), reverse=True
+    )[:75]
+
+    for member in recent_members:
+        try:
+            for role in member.roles[1:]:  # skip @everyone
+                await member.remove_roles(role, reason="Anti-Raid lockdown")
+        except Exception as e:
+            print(f"⚠️ Could not remove roles from {member}: {e}")
+
+    print("🔒 Lockdown complete.")
+
+# ==========================
+#  RUN BOT
+# ==========================
+
+if not TOKEN:
+    print("❌ Missing Discord token in .env file!")
+else:
+    bot.run(TOKEN)
